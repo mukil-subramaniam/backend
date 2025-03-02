@@ -15,8 +15,9 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
+
 // MongoDB Connection
-mongoose.connect('mongodb+srv://admin:admin@cluster0.hecyn.mongodb.net/Attendance', {
+mongoose.connect('mongodb+srv://admin:admin@attendaceapp.be0c3.mongodb.net/Projects', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
@@ -28,11 +29,49 @@ db.once('open', () => {
 });
 
 cloudinary.config({
-  cloud_name: 'diwalzljm',
-  api_key: '657848662828942',
-  api_secret: '5-3h0Bq57FT6sWJIZLjas6pP2Ws',
+  cloud_name: 'diqhluqy8',
+  api_key: '928656697324721',
+  api_secret: 'WmjWbVOlLeEWteHp3Eh017XeXgI',
 });
 
+async function deleteImagesFromCloudinary() {
+  try {
+    // Fetch all resources (images) from the specified folder
+    const result = await cloudinary.api.resources({
+      type: 'upload',
+      prefix: 'attendance_images',
+      max_results: 90, 
+    });
+
+    if (result.resources.length === 0) {
+      console.log('No images found in the folder.');
+      return;
+    }
+
+    // Extract public IDs of the images
+    const publicIds = result.resources.map((resource) => resource.public_id);
+
+    // Delete the images using their public IDs
+    await cloudinary.api.delete_resources(publicIds);
+
+    console.log(`${publicIds.length} images deleted successfully.`);
+  } catch (error) {
+    console.error('Error deleting images from Cloudinary:', error);
+  }
+}
+
+// Schedule the task to run every Sunday at 12:00 AM
+cron.schedule('0 0 * * 0', () => {
+  console.log('Running scheduled task to delete images...');
+  deleteImagesFromCloudinary();
+});
+
+console.log('Scheduler started. Waiting for Sunday 12:00 AM to trigger image deletion.');
+const branchSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true }, // Name of the branch
+  code: { type: String, required: true, unique: true }, // Code for the branch
+});
+const Branch = mongoose.model('Branch', branchSchema);
 // Schemas and Models
 const userSchema = new mongoose.Schema({
   name: String,
@@ -53,6 +92,12 @@ const deviceSchema = new mongoose.Schema({
     unique: true
   }
 });
+const deletedUserSchema = new mongoose.Schema({
+  userId: { type: String, required: true, unique: true },
+  deletedAt: { type: Date, default: Date.now },
+});
+
+const DeletedUser = mongoose.model('DeletedUser', deletedUserSchema);
 // Create the model from the schema
 const Device = mongoose.model('Device', deviceSchema);
 const adminSchema = new mongoose.Schema({
@@ -84,6 +129,7 @@ const lateRequestSchema = new mongoose.Schema({
   date: { type: String, required: true },
   time: { type: String, required: true },
   status: { type: String, default: 'pending' },
+  session:{type:String}
 });
 
 const LateRequest = mongoose.model('LateRequest', lateRequestSchema);
@@ -220,22 +266,50 @@ app.put('/api/usersUpdate/:id', async (req, res) => {
   }
 
   try {
-    
+    // Fetch the branch details from the branches collection
+    const branchDetails = await Branch.findOne({ name: branch });
+
+    if (!branchDetails) {
+      return res.status(400).json({ message: 'Invalid branch name' });
+    }
+
+    const branchCode = branchDetails.code;
+
+    // Find the user to be updated
+    const existingUser = await User.findOne({ userId: id });
+
+    if (!existingUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if the branch has changed
+    let newUserId = existingUser.userId; // Default to the current userId
+    if (existingUser.branch !== branch) {
+      // Count the number of users in the new branch
+      const branchUserCount = await User.countDocuments({ branch });
+      let userCount = (branchUserCount + 1).toString().padStart(3, '0'); // Format as 3-digit number
+      newUserId = `S${branchCode}${userCount}`; // Generate new userId
+
+      // Ensure the new userId does not exist in DeletedUser
+      while (await DeletedUser.exists({ userId: newUserId })) {
+        userCount = (parseInt(userCount, 10) + 1).toString().padStart(3, '0');
+        newUserId = `S${branchCode}${userCount}`;
+      }
+    }
+
+    // Update the user with the new details
     const updatedUser = await User.findOneAndUpdate(
       { userId: id },
       {
         name, phone, designation,
         salary, timeIn, timeOutTime,
-        lunchTime, branch
+        lunchTime, branch,
+        userId: newUserId // Update the userId if the branch has changed
       },
       { new: true, runValidators: true }
     );
 
-    if (!updatedUser) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    res.status(200).json({ status:'success' , message: 'User updated successfully', user: updatedUser });
+    res.status(200).json({ status: 'success', message: 'User updated successfully', user: updatedUser });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Error updating user', error: error.message });
@@ -259,7 +333,7 @@ app.get('/api/dailyreport', async (req, res) => {
     const report = await Promise.all(attendanceRecords.map(async (record) => {
       const user = await User.findOne({ userId: record.userId });
       return {
-        
+        userId:record.userId,
         userName: record.userName,
         session: record.session,
         status: record.attendance,
@@ -278,24 +352,34 @@ app.get('/api/dailyreport', async (req, res) => {
 app.post('/api/addUser', async (req, res) => {
   const { name, phone, designation, salary, branch, timeIn, timeOutTime, lunchTime } = req.body;
 
-  try {
-    const branchCodes = {
-      Uthukuli: '1',
-      'Uthukuli Rs': '2',
-      'Amman Nagar': '3',
-      Koolipalayam: '4',
-      Vijayamangalam: '5',
-    };
+  // Validate input
+  if (!name || !phone || !designation || !salary || !branch || !timeIn || !timeOutTime || !lunchTime) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
 
-    const branchCode = branchCodes[branch];
-    if (!branchCode) {
+  try {
+    // Fetch the branch details from the branches collection
+    const branchDetails = await Branch.findOne({ name: branch });
+
+    if (!branchDetails) {
       return res.status(400).json({ message: 'Invalid branch name' });
     }
 
-    const branchUserCount = await User.countDocuments({ branch });
-    const userCount = (branchUserCount + 1).toString().padStart(3, '0');
-    const userId = `S${branchCode}${userCount}`;
+    const branchCode = branchDetails.code;
 
+    // Count the number of users in the same branch
+    const branchUserCount = await User.countDocuments({ branch });
+    let userCount = (branchUserCount + 1).toString().padStart(3, '0'); // Format as 3-digit number
+    let userId = `S${branchCode}${userCount}`; // Generate userId (e.g., S1001)
+
+    // Check if the generated userId exists in DeletedUser collection
+    while (await DeletedUser.exists({ userId })) {
+      // Increment user count and regenerate userId
+      userCount = (parseInt(userCount, 10) + 1).toString().padStart(3, '0');
+      userId = `S${branchCode}${userCount}`;
+    }
+
+    // Create a new user
     const newUser = new User({
       name,
       phone,
@@ -308,12 +392,20 @@ app.post('/api/addUser', async (req, res) => {
       lunchTime,
     });
 
+    // Save the new user to the database
     await newUser.save();
 
     res.status(201).json({ message: 'User added successfully!', userId });
   } catch (error) {
     console.error('Error adding user:', error);
-    res.status(500).json({ message: 'Failed to add user' });
+
+    // Handle duplicate key error specifically
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'User ID already exists' });
+    }
+
+    // Handle other errors
+    res.status(500).json({ message: 'Failed to add user', error: error.message });
   }
 });
 
@@ -437,7 +529,7 @@ app.post('/api/backToWork/:userId', async (req, res) => {
 
 // Send Admin Request Endpoint
 app.post('/api/sendAdminRequest', async (req, res) => {
-  const { userId, userName, date, time } = req.body;
+  const { userId, userName, date, time,session } = req.body;
 
   if (!userId || !userName || !date || !time) {
     return res.status(400).json({ message: 'Missing required fields' });
@@ -450,6 +542,7 @@ app.post('/api/sendAdminRequest', async (req, res) => {
       date,
       time,
       status: 'pending',
+      session,
     });
 
     await newLateRequest.save();
@@ -459,6 +552,7 @@ app.post('/api/sendAdminRequest', async (req, res) => {
     res.status(500).json({ message: 'Failed to send admin request' });
   }
 });
+
 app.get('/api/lateRequests', async (req, res) => {
   try {
     const lateRequests = await LateRequest.find();
@@ -547,7 +641,7 @@ app.post('/device', async (req, res) => {
 });
 
 app.post('/api/getLateRequestStatus', async (req, res) => {
-  const { userId, userName, date } = req.body;
+  const { userId, userName, date,session,time } = req.body;
   //console.log(`Received request with userId: ${userId}, userName: ${userName}, date: ${date}`);
 
   if (!userId) {
@@ -555,7 +649,9 @@ app.post('/api/getLateRequestStatus', async (req, res) => {
   }
 
   try {
-    const lateRequest = await LateRequest.findOne({ userId,date });
+    
+    const lateRequest = await LateRequest.findOne({ userId,date,session,time });
+    
     if (!lateRequest) {
       //console.log('Late request not found');
       return res.status(404).json({ message: 'Late request not found' });
@@ -581,52 +677,108 @@ app.get('/api/timeIn/:userId', async (req, res) => {
     return res.status(500).json({ message: 'Error fetching  time', error });
   }
 });
+// Add Branch Endpoint
+app.post('/api/addBranch', async (req, res) => {
+  const { name } = req.body;
 
-app.put('/api/MorninglateRequests/:requestId', async (req, res) => {
-  const { requestId } = req.params;
-  const { status, date,userName ,time} = req.body;
-    console.log(time)
+  // Validate input
+  if (!name) {
+    return res.status(400).json({ message: 'Branch name is required' });
+  }
+
   try {
-    // Find the LateRequest by userId (requestId in params) and update its status and date
-    const updatedRequest = await LateRequest.findOneAndUpdate(
-      {userId: requestId,date,time }, // Search by userId
-      { status},
-      { new: true, runValidators: true, upsert: true } // Ensure new data is returned, validation is run, and create if not exists
-    );
+    // Check if a branch with the same name already exists
+    const existingBranch = await Branch.findOne({ name });
 
-    // If the request is not found
-    if (!updatedRequest) {
-      return res.status(404).json({ message: 'Request not found' });
+    if (existingBranch) {
+      return res.status(409).json({ message: 'Branch name already exists' });
     }
 
-    // If the status is 'approved', add an attendance entry
-    if (status === 'approved') {
-      const attendanceData = new Attendance({
-        userName:userName,
-        userId: requestId,
-        session: 'Morning',
-        attendance: 'present',
-        date: date,
-      });
+    // Fetch all existing branches to determine the next branch code
+    const branches = await Branch.find({}, 'code').sort({ code: -1 }).limit(1);
 
-      // Save the attendance record
-      await attendanceData.save();
-    }
+    // Determine the next branch code
+    const nextCode = branches.length > 0 ? (parseInt(branches[0].code, 10) + 1).toString() : '1';
 
-    // Send the updated request data back
-    res.status(200).json({
-      message: 'Request status updated successfully',
-      request: updatedRequest,
+    // Create a new branch with the provided name and auto-incremented code
+    const newBranch = new Branch({
+      name,
+      code: nextCode,
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error updating request' });
+
+    // Save the new branch to the database
+    await newBranch.save();
+
+    res.status(201).json({ message: 'Branch added successfully!', branch: { name, code: nextCode } });
+  } catch (error) {
+    console.error('Error adding branch:', error);
+
+    // Handle duplicate key error specifically
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'Branch name already exists' });
+    }
+
+    // Handle other errors
+    res.status(500).json({ message: 'Failed to add branch', error: error.message });
   }
 });
 
+app.get('/api/branches', async (req, res) => {
+  try {
+    // Fetch all branches from the database
+    const branches = await Branch.find({}, 'name'); // Only retrieve the 'name' field
 
+    // Extract branch names into an array
+    const branchNames = branches.map(branch => branch.name);
 
-// Start Server
+    // Return the list of branch names
+    res.status(200).json({ branches: branchNames });
+  } catch (error) {
+    console.error('Error fetching branches:', error);
+    res.status(500).json({ message: 'Failed to fetch branches', error: error.message });
+  }
+});
+app.delete('/api/deleteUser/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Find the user by userId
+    const user = await User.findOne({ userId });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Delete the user
+    await User.deleteOne({ userId });
+
+    // Add the userId to the DeletedUser collection to prevent reuse
+    await DeletedUser.create({ userId });
+
+    res.status(200).json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ message: 'Failed to delete user', error: error.message });
+  }
+});
+
+app.get('/api/users', async (req, res) => {
+  try {
+    const users = await User.find(); // Fetch all users from the database
+
+    if (users.length === 0) {
+      return res.status(404).json({ message: 'No users found' });
+    }
+
+    return res.status(200).json(users); // Return the list of users
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ message: 'Failed to fetch users', error: error.message });
+  }
+});
+app.get('/', (req, res) => {
+  res.json({ message: 'Welcome to the Attendance Management System' });
+} ); 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });
