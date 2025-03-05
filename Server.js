@@ -672,7 +672,7 @@ app.get('/api/timeIn/:userId', async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    return res.status(200).json({ timeIn: user.timeIn });
+    return res.status(200).json({ timeIn: user.timeIn,timeOut:user.timeOutTime });
   } catch (error) {
     return res.status(500).json({ message: 'Error fetching  time', error });
   }
