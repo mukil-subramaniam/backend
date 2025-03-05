@@ -353,7 +353,9 @@ app.post('/api/addUser', async (req, res) => {
   const { name, phone, designation, salary, branch, timeIn, timeOutTime, lunchTime } = req.body;
 
   // Validate input
-  if (!name || !phone || !designation || !salary || !branch || !timeIn || !timeOutTime || !lunchTime) {
+  console.log(designation)
+  if (!name || !phone || !designation || !salary || !branch || !timeIn  || !lunchTime) {
+    
     return res.status(400).json({ message: 'All fields are required' });
   }
 
