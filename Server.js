@@ -17,7 +17,7 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 
 // MongoDB Connection
-mongoose.connect('mongodb://localhost:27017/userdb', {
+mongoose.connect('mongodb+srv://admin:admin@attendaceapp.be0c3.mongodb.net/Projects', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
