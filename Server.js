@@ -17,7 +17,7 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 
 // MongoDB Connection
-mongoose.connect('mongodb+srv://admin:admin@attendaceapp.be0c3.mongodb.net/Projects', {
+mongoose.connect('mongodb://localhost:27017/userdb', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
@@ -70,7 +70,10 @@ console.log('Scheduler started. Waiting for Sunday 12:00 AM to trigger image del
 const branchSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true }, // Name of the branch
   code: { type: String, required: true, unique: true }, // Code for the branch
+  latitude: { type: Number, required: true }, // Latitude coordinate
+  longitude: { type: Number, required: true }, // Longitude coordinate
 });
+
 const Branch = mongoose.model('Branch', branchSchema);
 // Schemas and Models
 const userSchema = new mongoose.Schema({
@@ -259,7 +262,7 @@ app.put('/api/usersUpdate/:id', async (req, res) => {
     name, phone, designation, salary,
     timeIn, timeOutTime, lunchTime, branch
   } = req.body;
-
+console.log(designation)
   // Validate required fields
   if (!name || !phone || !designation || !salary || !timeIn || !timeOutTime || !lunchTime || !branch) {
     return res.status(400).json({ message: 'All fields are required' });
@@ -353,7 +356,7 @@ app.post('/api/addUser', async (req, res) => {
   const { name, phone, designation, salary, branch, timeIn, timeOutTime, lunchTime } = req.body;
 
   // Validate input
-  console.log(designation)
+  console.log(name + " " + phone + " " + designation + " " + salary + " " + branch + " " + timeIn + " " + timeOutTime + " " + lunchTime);
   if (!name || !phone || !designation || !salary || !branch || !timeIn  || !lunchTime) {
     
     return res.status(400).json({ message: 'All fields are required' });
@@ -681,49 +684,56 @@ app.get('/api/timeIn/:userId', async (req, res) => {
 });
 // Add Branch Endpoint
 app.post('/api/addBranch', async (req, res) => {
-  const { name } = req.body;
-
-  // Validate input
-  if (!name) {
-    return res.status(400).json({ message: 'Branch name is required' });
-  }
-
-  try {
-    // Check if a branch with the same name already exists
-    const existingBranch = await Branch.findOne({ name });
-
-    if (existingBranch) {
-      return res.status(409).json({ message: 'Branch name already exists' });
-    }
-
-    // Fetch all existing branches to determine the next branch code
-    const branches = await Branch.find({}, 'code').sort({ code: -1 }).limit(1);
-
-    // Determine the next branch code
-    const nextCode = branches.length > 0 ? (parseInt(branches[0].code, 10) + 1).toString() : '1';
-
-    // Create a new branch with the provided name and auto-incremented code
-    const newBranch = new Branch({
-      name,
-      code: nextCode,
-    });
-
-    // Save the new branch to the database
-    await newBranch.save();
-
-    res.status(201).json({ message: 'Branch added successfully!', branch: { name, code: nextCode } });
-  } catch (error) {
-    console.error('Error adding branch:', error);
-
-    // Handle duplicate key error specifically
-    if (error.code === 11000) {
-      return res.status(409).json({ message: 'Branch name already exists' });
-    }
-
-    // Handle other errors
-    res.status(500).json({ message: 'Failed to add branch', error: error.message });
-  }
-});
+    const { name, latitude, longitude } = req.body;
+  console.log(name + " " + latitude + " " + longitude);
+    // Validate input
+    if (!name || latitude === undefined || longitude === undefined) {
+    console.log("Branch name, latitude, and longitude are required");
+      return res.status(400).json({ message: 'Branch name, latitude, and longitude are required' });
+    }
+  
+    try {
+      // Check if a branch with the same name already exists
+      const existingBranch = await Branch.findOne({ name });
+  
+      if (existingBranch) {
+        return res.status(409).json({ message: 'Branch name already exists' });
+      }
+  
+      // Fetch the last branch to determine the next branch code
+      const branches = await Branch.find({}, 'code').sort({ code: -1 }).limit(1);
+  
+      // Determine the next branch code
+      const nextCode = branches.length > 0 ? (parseInt(branches[0].code, 10) + 1).toString() : '1';
+  
+      // Create a new branch with the provided name, code, latitude, and longitude
+      const newBranch = new Branch({
+        name,
+        code: nextCode,
+        latitude,
+        longitude,
+      });
+  
+      // Save the new branch to the database
+      await newBranch.save();
+  console.log("Branch added successfully");
+      res.status(201).json({
+        message: 'Branch added successfully!',
+        branch: { name, code: nextCode, latitude, longitude },
+      });
+    } catch (error) {
+      console.error('Error adding branch:', error);
+  
+      // Handle duplicate key error
+      if (error.code === 11000) {
+        return res.status(409).json({ message: 'Branch name or code already exists' });
+      }
+  
+      // Handle other errors
+      res.status(500).json({ message: 'Failed to add branch', error: error.message });
+    }
+  });
+  
 
 app.get('/api/branches', async (req, res) => {
   try {
@@ -778,6 +788,42 @@ app.get('/api/users', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch users', error: error.message });
   }
 });
+
+app.get('/api/getBranch/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  if (!userId) {
+    return res.status(400).json({ message: 'userId is required' });
+  }
+
+  try {
+    const user = await User.findOne({ userId });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const branch = await Branch.findOne({ name: user.branch });
+
+    if (!branch) {
+      return res.status(404).json({ message: 'Branch not found for user' });
+    }
+
+    return res.status(200).json({
+      message: 'Branch details fetched successfully',
+      branch: {
+        name: branch.name,
+        code: branch.code,
+        latitude: branch.latitude,
+        longitude: branch.longitude,
+      },
+    });
+  } catch (error) {
+    console.error('Error in /api/getBranch/:userId:', error);
+    return res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({ message: 'Welcome to the Attendance Management System' });
 } ); 
